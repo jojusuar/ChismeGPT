@@ -29,9 +29,9 @@ int main(int argc, char **argv){
     char *cvalue = NULL;
     char *pvalue = NULL;
     char *tvalue = NULL;
-    bool cflag;
-    bool pflag;
-    bool tflag;
+    bool cflag = false;
+    bool pflag = false;
+    bool tflag = false;
     int index;
     int c;
 
@@ -229,8 +229,9 @@ void *serverThread(void *arg){
         }
         sem_wait(&schedulerMutex);
         if(!schedulerRunning && shouldStartScheduler()){
-            printf("STARTING SCHEDULER THREAD...\n");
-             pthread_create(&scheduler_tid, NULL, schedulerThread, NULL);
+            printf("QUEUES ARE NOT EMPTY ANYMORE, STARTING SCHEDULER THREAD...\n");
+            schedulerRunning = true;
+            pthread_create(&scheduler_tid, NULL, schedulerThread, NULL);
         }
         sem_post(&schedulerMutex);
     }
@@ -255,9 +256,6 @@ bool shouldStartScheduler(){
 }
 
 void *schedulerThread(void *arg){
-    sem_wait(&schedulerMutex);
-    schedulerRunning = true;
-    sem_post(&schedulerMutex);
     pthread_detach(pthread_self());
     MessageControlBlock *nextMCB = NULL;
     while(true){
@@ -283,6 +281,7 @@ void *schedulerThread(void *arg){
                 sem_wait(&currentMCBMutex);
                 if(currentMCB == NULL){
                     currentMCB = nextMCB;
+                    printf("Scheduled message '%s' from ID: %s at FD %d\n", nextMCB->message->textblock, nextMCB->message->clientID, nextMCB->response_fd);
                     nextMCB = NULL;
                     sem_post(&currentMCBMutex);
                     break;
@@ -294,7 +293,7 @@ void *schedulerThread(void *arg){
             sem_wait(&schedulerMutex);
             schedulerRunning = false;
             sem_post(&schedulerMutex);
-            printf("STOPPING SCHEDULER THREAD...\n");
+            printf("NO MORE MESSAGES QUEUED, STOPPING SCHEDULER THREAD...\n");
             pthread_exit(NULL);
         }
     }
@@ -305,7 +304,7 @@ void *workerThread(void *arg){
     pthread_detach(pthread_self());
     int buffer_index = *(int *)arg;
     free(arg);
-    char *response = "Your message has successully finished processing!";
+    char *response = "Your message has successfully finished processing!";
     int response_size = strlen(response);
     sem_t *my_mutex = &threadMutexes[buffer_index];
     MessageControlBlock *currentMCB;
