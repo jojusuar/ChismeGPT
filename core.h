@@ -24,6 +24,8 @@ typedef struct mcb_buffer{
 
 void *serverThread(void *);
 
+bool shouldStartScheduler();
+
 void *schedulerThread(void *);
 
 void *workerThread(void *);

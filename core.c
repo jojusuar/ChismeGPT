@@ -9,6 +9,7 @@ sem_t postpaidMutex;
 sem_t readyMutex;
 sem_t *threadMutexes;
 sem_t currentMCBMutex;
+sem_t schedulerMutex;
 struct map* clientMap;
 
 List *prepaidWaiting;
@@ -16,6 +17,11 @@ List *postpaidWaiting;
 List *readyQueue;
 
 Buffer *message_buffer;
+
+pthread_t server_tid;
+pthread_t scheduler_tid;
+
+bool schedulerRunning = false;
 
 MessageControlBlock *currentMCB;
 
@@ -73,6 +79,7 @@ int main(int argc, char **argv){
     sem_init(&postpaidMutex, 0, 1);
     sem_init(&readyMutex, 0, 1);
     sem_init(&currentMCBMutex, 0, 1);
+    sem_init(&schedulerMutex, 0, 1);
 
     message_buffer = (Buffer *)malloc(sizeof(Buffer));
     message_buffer->array = (MessageControlBlock **)malloc(concurrent_messages*sizeof(MessageControlBlock *));
@@ -92,10 +99,7 @@ int main(int argc, char **argv){
         pthread_create(&worker_tid, NULL, workerThread, (void *)buffer_index_ptr);
     }
 
-    pthread_t server_tid;
-    pthread_t scheduler_tid;
     pthread_create(&server_tid, NULL, serverThread, NULL);
-    pthread_create(&scheduler_tid, NULL, schedulerThread, NULL);
 
     MessageControlBlock *readyMCB;
     while(true){
@@ -104,7 +108,7 @@ int main(int argc, char **argv){
         currentMCB = NULL;
         sem_post(&currentMCBMutex);
         if(readyMCB != NULL){
-            printf("Scheduling message '%s' from ID: %s at FD %d\n", readyMCB->message->textblock, readyMCB->message->clientID, readyMCB->response_fd);
+            printf("Dispatching message '%s' from ID: %s at FD %d\n", readyMCB->message->textblock, readyMCB->message->clientID, readyMCB->response_fd);
             int i = 0;
             do{
                 int blocked = sem_trywait(&threadMutexes[i]);
@@ -127,17 +131,16 @@ int main(int argc, char **argv){
                     }
                     sem_post(&threadMutexes[i]);
                 }
-                i++;
-                if(i == concurrent_messages) i = 0;
+                i = (i + 1)%concurrent_messages;
             }while(true);
         }    
     }
 
     pthread_join(server_tid, NULL);
-    pthread_join(scheduler_tid, NULL);
     sem_destroy(&prepaidMutex);
     sem_destroy(&postpaidMutex);
     sem_destroy(&readyMutex);
+    sem_destroy(&schedulerMutex);
     for(int i = 0; i < concurrent_messages; i++){
         sem_destroy(&threadMutexes[i]);
         free(message_buffer->array[i]);
@@ -224,11 +227,38 @@ void *serverThread(void *arg){
             tailInsert(postpaidWaiting, (void *)controlBlock);
             sem_post(&postpaidMutex);
         }
+        sem_wait(&schedulerMutex);
+        if(!schedulerRunning && shouldStartScheduler()){
+            printf("STARTING SCHEDULER THREAD...\n");
+             pthread_create(&scheduler_tid, NULL, schedulerThread, NULL);
+        }
+        sem_post(&schedulerMutex);
     }
     return NULL;
 }
 
+bool shouldStartScheduler(){
+    int messageCount = 0;
+    sem_wait(&readyMutex);
+    messageCount += readyQueue->length;
+    sem_post(&readyMutex);
+    sem_wait(&prepaidMutex);
+    messageCount += prepaidWaiting->length;
+    sem_post(&prepaidMutex);
+    sem_wait(&postpaidMutex);
+    messageCount += postpaidWaiting->length;
+    sem_post(&postpaidMutex);
+    if(messageCount == 1){
+        return true;
+    }
+    return false;
+}
+
 void *schedulerThread(void *arg){
+    sem_wait(&schedulerMutex);
+    schedulerRunning = true;
+    sem_post(&schedulerMutex);
+    pthread_detach(pthread_self());
     MessageControlBlock *nextMCB = NULL;
     while(true){
         sem_wait(&postpaidMutex);
@@ -259,6 +289,13 @@ void *schedulerThread(void *arg){
                 }
                 sem_post(&currentMCBMutex);
             }
+        }
+        else{
+            sem_wait(&schedulerMutex);
+            schedulerRunning = false;
+            sem_post(&schedulerMutex);
+            printf("STOPPING SCHEDULER THREAD...\n");
+            pthread_exit(NULL);
         }
     }
     return NULL;
